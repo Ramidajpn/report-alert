@@ -1,0 +1,20 @@
+{
+  "DB_HOST": "your-rds-host.rds.amazonaws.com",
+  "DB_NAME": "postgres",
+  "DB_USER": "postgres",
+  "DB_PASSWORD": "your-super-secret-password",
+  "DB_PORT": 5432,
+  "DB_SSLMODE": "require",
+  "DB_CONNECT_TIMEOUT": 20,
+  "TABLE_FINANCE": "FINANCE_DATA",
+
+  "AWS_ACCESS_KEY_ID": "AKIA...",
+  "AWS_SECRET_ACCESS_KEY": "your-aws-secret-key",
+  "AWS_REGION": "us-east-1",
+
+  "OVERRUN_BUCKET": "overrun",
+  "SUMMARY_BUCKET": "report-staging1",
+
+  "BEDROCK_MODEL_ID": "arn:aws:bedrock:...",
+  "OVERRUN_LIST_MAX_FILES": 2000
+}
