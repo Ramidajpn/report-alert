@@ -94,17 +94,30 @@ def fetch_alert_data(bucket: str, key: str) -> Optional[Dict[str, Any]]:
         st.error(f"❌ ไม่สามารถอ่านไฟล์ {key}: {e}")
         return None
 
-def build_llm_prompt(alerts: List[Dict[str, Any]]) -> str:
-    """สร้าง prompt สำหรับ Bedrock AI"""
+def fetch_graph_data(bucket: str, date_str: str) -> Optional[List[Dict[str, Any]]]:
+    """Fetch graph data from S3 (format: YYYYMMDD_graph.json)"""
+    try:
+        s3 = s3_client()
+        key = f"overrun/batch/{date_str}_graph.json"
+        obj = s3.get_object(Bucket=bucket, Key=key)
+        body = obj["Body"].read().decode("utf-8")
+        data = json.loads(body)
+        return data if isinstance(data, list) else []
+    except Exception as e:
+        return None
+
+def build_llm_prompt(alerts: List[Dict[str, Any]], graph_data: Optional[List[Dict[str, Any]]] = None) -> str:
+    """สร้าง prompt สำหรับ Bedrock AI แบบ 2 ส่วน (alerts table + graph analysis)"""
     
-    # แยก RED alerts
+    # ส่วนที่ 1: ตาราง Cost Codes ที่ Overrun จาก alerts
     red_alerts = [a for a in alerts if a.get("status", "").upper() == "RED"]
     green_alerts = [a for a in alerts if a.get("status", "").upper() == "GREEN"]
     
+    # คำนวณงบประมาณและค่าใช้จ่ายรวม
     total_budget = sum(a.get("budget", 0) for a in alerts)
     total_actual = sum(a.get("actual", 0) for a in alerts)
     
-    # สร้างตาราง RED alerts
+    # สร้างตาราง RED alerts (ส่วนที่ 1)
     table_rows = []
     for alert in red_alerts:
         cost_code = alert.get("cost_code", "N/A")
@@ -114,29 +127,79 @@ def build_llm_prompt(alerts: List[Dict[str, Any]]) -> str:
         overrun = actual - budget
         overrun_pct = (overrun / budget * 100) if budget > 0 else 0
         
-        # กำหนดระดับความรุนแรง
-        if overrun_pct > 200:
-            risk_level = "วิกฤติสุด"
-        elif overrun_pct > 100:
-            risk_level = "รุนแรงมาก"
-        elif overrun_pct > 50:
-            risk_level = "รุนแรง"
-        elif overrun_pct > 20:
-            risk_level = "ปานกลาง"
-        else:
-            risk_level = "เล็กน้อย"
-        
         table_rows.append(
-            f"| {cost_code} | {costname} | {budget:,.0f} | {actual:,.0f} | {overrun:,.0f} | {overrun_pct:.1f}% | {risk_level} |"
+            f"| {cost_code} | {costname} | {budget:,.0f} | {actual:,.0f} | {overrun:,.0f} | {overrun_pct:.1f}% |"
         )
     
     table_header = """
-| Cost Code | ชื่อหมวดงาน | งบประมาณ (บาท) | ค่าใช้จ่ายจริง (บาท) | Overrun (บาท) | Overrun % | ระดับความรุนแรง |
-|-----------|-------------|----------------|---------------------|---------------|-----------|------------------|"""
+| Cost Code | ชื่อหมวดงาน | งบประมาณ (บาท) | ค่าใช้จ่ายจริง (บาท) | Overrun (บาท) | Overrun % |
+|-----------|-------------|----------------|---------------------|---------------|-----------|"""
     
     cost_code_table = table_header + "\n" + "\n".join(table_rows) if table_rows else "ไม่พบข้อมูล Overrun"
     
-    # ดึง report_date จาก alert แรก
+    # ส่วนที่ 2: วิเคราะห์เชิงลึกจาก graph_data
+    graph_analysis = ""
+    if graph_data:
+        # กรองเฉพาะ cost codes ที่ overrun
+        # cost_code จาก alerts = costcode_h ใน graph_data
+        red_cost_codes = [a.get("cost_code") for a in red_alerts]
+        overrun_graph = [g for g in graph_data if g.get("costcode_h") in red_cost_codes]
+        
+        # สร้างข้อมูลสำหรับวิเคราะห์
+        graph_summary = []
+        for cost_code_h in red_cost_codes:
+            code_data = [g for g in overrun_graph if g.get("costcode_h") == cost_code_h]
+            if code_data:
+                # เรียง sort ตาม ym
+                code_data_sorted = sorted(code_data, key=lambda x: x.get("ym", ""))
+                latest = code_data_sorted[-1] if code_data_sorted else {}
+                
+                pm_name = latest.get("pm_emp_name", "ไม่ระบุ")
+                taskname = latest.get("taskname", "ไม่ระบุ")
+                
+                # สร้างรายละเอียดรายเดือน เพื่อวิเคราะห์ว่า overrun เกิดตั้งแต่เดือนไหน
+                monthly_details = []
+                for data in code_data_sorted:
+                    ym = data.get("ym", "")
+                    budget = data.get("amount_plan_today", 0)
+                    actual = data.get("amount_acc_today", 0)
+                    progress = data.get("progress_ym_acc", 0)
+                    overrun_amount = actual - budget
+                    overrun_status = "🔴 OVERRUN" if actual > budget else "🟢 OK"
+                    
+                    # แปลง ym เป็นชื่อเดือน (เช่น 202501 -> ม.ค. 2025)
+                    month_name = ""
+                    if ym and len(ym) >= 6:
+                        year = ym[:4]
+                        month = ym[4:6]
+                        month_names = ["", "ม.ค.", "ก.พ.", "มี.ค.", "เม.ย.", "พ.ค.", "มิ.ย.", 
+                                       "ก.ค.", "ส.ค.", "ก.ย.", "ต.ค.", "พ.ย.", "ธ.ค."]
+                        try:
+                            month_name = f"{month_names[int(month)]} {year}"
+                        except:
+                            month_name = ym
+                    else:
+                        month_name = ym
+                    
+                    monthly_details.append(
+                        f"    - {month_name}: งบ {budget:,.0f} | จริง {actual:,.0f} | ความก้าวหน้า {progress:.1f}% | {overrun_status}"
+                    )
+                
+                months = [d.get("ym") for d in code_data_sorted if d.get("ym")]
+                
+                # รวม cost codes ย่อยที่เกี่ยวข้อง
+                sub_cost_codes = list(set([d.get("costcode") for d in code_data_sorted if d.get("costcode")]))
+                
+                graph_summary.append(f"""
+- **Cost Code หลัก: {cost_code_h}** ({taskname})
+  - PM ผู้รับผิดชอบ: {pm_name}
+  - Cost Codes ย่อยที่เกี่ยวข้อง: {', '.join(sub_cost_codes)}
+  - จำนวนเดือนที่ติดตาม: {len(months)} เดือน
+  - รายละเอียดรายเดือน:
+{chr(10).join(monthly_details)}""")
+        
+        graph_analysis = "\n".join(graph_summary) if graph_summary else "ไม่มีข้อมูล graph สำหรับวิเคราะห์"
+    
     report_date = alerts[0].get("report_date", "N/A") if alerts else "N/A"
     project_name = alerts[0].get("project_name", "N/A") if alerts else "N/A"
     
@@ -168,6 +231,13 @@ def build_llm_prompt(alerts: List[Dict[str, Any]]) -> str:
 {cost_code_table}
 ```
 
+---
+
+**📈 ข้อมูลเชิงลึกจากการติดตามรายเดือน (Graph Analysis)**
+{graph_analysis}
+
+---
+
 กรุณาจัดทำรายงานโดยใช้รูปแบบนี้เท่านั้น:
 
 📊 **สรุปสถานการณ์โครงการ**
@@ -175,13 +245,22 @@ def build_llm_prompt(alerts: List[Dict[str, Any]]) -> str:
 
 ⚠️ **Cost Codes ที่ต้องติดตามเร่งด่วน**
 วิเคราะห์ Cost Codes ที่มีปัญหารุนแรง แบ่งตามระดับความรุนแรง
-**สำคัญ:** วิเคราะห์ว่า overrun เกิดขึ้นในช่วงเดือนใด (ดูจาก report_date: {report_date})
+**สำคัญ:** วิเคราะห์ว่า overrun เกิดขึ้นในช่วงเดือนใด โดยดูจากข้อมูล Graph Analysis ด้านบน
+- ระบุว่า cost code ไหนบ้างที่ overrun
+- cost code ที่ overrun มาจาก task ไหนบ้าง
+- ระบุชื่อ PM ผู้รับผิดชอบแต่ละ cost code
+- วิเคราะห์ว่าสถานการณ์เริ่มเสื่อมตั้งแต่เดือนใด (ดูจากช่วงเวลาที่มีข้อมูล)
 
 🧐 **การวิเคราะห์สาเหตุ**
-วิเคราะห์ปัจจัยที่อาจก่อให้เกิด Overrun
+วิเคราะห์ปัจจัยที่อาจก่อให้เกิด Overrun โดยพิจารณาจาก:
+- ช่วงเวลาที่เริ่มมีปัญหา
+- Task ที่เกี่ยวข้อง
+- PM ผู้รับผิดชอบ
 
 💡 **แนวทางแก้ไขและการจัดการ**
-เสนอแนะแนวทางจัดการปัญหาที่ชัดเจนและนำไปปฏิบัติได้จริง
+เสนอแนะแนวทางจัดการปัญหาที่ชัดเจนและนำไปปฏิบัติได้จริง โดยเฉพาะ:
+- การติดตาม PM และ task ที่มีปัญหา
+- การปรับแผนงบประมาณตามช่วงเวลา
 
 🛡️ **ระบบป้องกันและติดตาม**
 เสนอแนะแนวทางป้องกันการเกิด Overrun ซ้ำในอนาคต
@@ -262,10 +341,16 @@ if go:
         else:
             # เอาไฟล์ล่าสุด
             latest_file = files[0]
-            st.info(f"📅 ใช้ข้อมูลจากไฟล์: {latest_file['key']} (วันที่: {latest_file['date'].strftime('%d/%m/%Y')})")
+            file_key = latest_file['key']
+            st.info(f"📅 ใช้ข้อมูลจากไฟล์: {file_key} (วันที่: {latest_file['date'].strftime('%d/%m/%Y')})")
+            
+            # ดึง date_str จากชื่อไฟล์ (เช่น batch/20251015_3_alerts.json -> 20251015)
+            import re
+            date_match = re.search(r'(\d{8})', file_key)
+            file_date_str = date_match.group(1) if date_match else None
             
             # ดึงข้อมูล
-            data = fetch_alert_data(CONFIG["OVERRUN_BUCKET"], latest_file['key'])
+            data = fetch_alert_data(CONFIG["OVERRUN_BUCKET"], file_key)
             
             if data and "alerts" in data:
                 alerts = data["alerts"]
@@ -324,7 +409,18 @@ if go:
                     st.subheader("🧾 Executive Summary (AI Analysis)")
                     st.info("🤖 กำลังวิเคราะห์ข้อมูลด้วย AI...")
                     
-                    prompt = build_llm_prompt(alerts)
+                    # ดึงข้อมูล graph สำหรับวิเคราะห์เชิงลึก (ใช้ date จากชื่อไฟล์)
+                    graph_data = None
+                    
+                    if file_date_str:
+                        graph_data = fetch_graph_data(CONFIG["OVERRUN_BUCKET"], file_date_str)
+                        if not graph_data:
+                            st.warning(f"⚠️ ไม่พบข้อมูล graph สำหรับการวิเคราะห์เชิงลึก")
+                    else:
+                        st.error("❌ ไม่สามารถดึงวันที่จากชื่อไฟล์ alerts ได้")
+                        graph_data = None
+                    
+                    prompt = build_llm_prompt(alerts, graph_data)
                     summary = call_bedrock(prompt)
                     st.markdown(summary)
                     
