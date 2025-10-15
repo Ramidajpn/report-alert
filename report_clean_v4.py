@@ -117,25 +117,18 @@ def build_llm_prompt(alerts: List[Dict[str, Any]], graph_data: Optional[List[Dic
     total_budget = sum(a.get("budget", 0) for a in alerts)
     total_actual = sum(a.get("actual", 0) for a in alerts)
     
-    # สร้างตาราง RED alerts (ส่วนที่ 1)
-    table_rows = []
+    # สร้างรายการ Cost Codes ที่ Overrun (ไม่ใช้ตาราง)
+    red_cost_list = []
     for alert in red_alerts:
         cost_code = alert.get("cost_code", "N/A")
         costname = alert.get("costname", "")
         budget = alert.get("budget", 0)
         actual = alert.get("actual", 0)
         overrun = actual - budget
-        overrun_pct = (overrun / budget * 100) if budget > 0 else 0
         
-        table_rows.append(
-            f"| {cost_code} | {costname} | {budget:,.0f} | {actual:,.0f} | {overrun:,.0f} | {overrun_pct:.1f}% |"
-        )
+        red_cost_list.append(f"- **{cost_code}** ({costname}): งบประมาณ {budget:,.0f} บาท, ค่าใช้จ่ายจริง {actual:,.0f} บาท, Overrun {overrun:,.0f} บาท")
     
-    table_header = """
-| Cost Code | ชื่อหมวดงาน | งบประมาณ (บาท) | ค่าใช้จ่ายจริง (บาท) | Overrun (บาท) | Overrun % |
-|-----------|-------------|----------------|---------------------|---------------|-----------|"""
-    
-    cost_code_table = table_header + "\n" + "\n".join(table_rows) if table_rows else "ไม่พบข้อมูล Overrun"
+    cost_code_summary = "\n".join(red_cost_list) if red_cost_list else "ไม่พบข้อมูล Overrun"
     
     # ส่วนที่ 2: วิเคราะห์เชิงลึกจาก graph_data
     graph_analysis = ""
@@ -226,10 +219,8 @@ def build_llm_prompt(alerts: List[Dict[str, Any]], graph_data: Optional[List[Dic
 
 ---
 
-**ตารางข้อมูล Cost Codes ที่ Overrun (Status = RED)**
-```markdown
-{cost_code_table}
-```
+**รายการ Cost Codes ที่ Overrun (Status = RISK)**
+{cost_code_summary}
 
 ---
 
@@ -368,21 +359,27 @@ if go:
                 with col3:
                     st.metric("ปกติ (GREEN)", green_count)
                 
-                # แสดงตารางเฉพาะ field ที่ต้องการ พร้อม emoji status
+                # แสดงตารางเฉพาะ field ที่ต้องการ พร้อม status
                 df = pd.DataFrame(alerts)
                 
-                # ฟังก์ชันสำหรับแปลง status เป็น emoji
-                def status_emoji(s):
+                # คำนวณ Overrun %
+                df['overrun_pct'] = df.apply(
+                    lambda row: ((row['actual'] - row['budget']) / row['budget'] * 100) if row.get('budget', 0) > 0 else 0,
+                    axis=1
+                )
+                
+                # ฟังก์ชันสำหรับแปลง status
+                def status_text(s):
                     s = str(s).upper()
                     if s == "RED":
-                        return "🔴 RED"
+                        return "🔴 RISK"
                     elif s == "GREEN":
-                        return "🟢 GREEN"
+                        return "🟢 SAFE"
                     else:
                         return s
                 
                 # เลือกเฉพาะคอลัมน์ที่ต้องการ (ใช้ reindex เพื่อป้องกัน KeyError)
-                selected_columns = ["plan_code", "cost_code", "costname", "budget", "actual", "progress_per", "eac", "status"]
+                selected_columns = ["plan_code", "cost_code", "costname", "budget", "actual", "overrun_pct", "eac", "status"]
                 
                 # สร้าง DataFrame ใหม่ โดยใช้ reindex เพื่อจัดการคอลัมน์ที่หายไป
                 df_display = df.reindex(columns=selected_columns, fill_value="")
@@ -392,15 +389,18 @@ if go:
                     "plan_code": "Plan Code",
                     "cost_code": "Cost Code",
                     "costname": "Cost Name",
-                    "budget": "Budget",
-                    "actual": "Actual",
-                    "progress_per": "Progress Percent",
+                    "budget": "BCWP",
+                    "actual": "ACWP",
+                    "overrun_pct": "Overrun %",
                     "eac": "EAC",
                     "status": "Status"
                 })
                 
-                # แปลง status เป็น emoji
-                df_display["Status"] = df_display["Status"].apply(status_emoji)
+                # แปลง status
+                df_display["Status"] = df_display["Status"].apply(status_text)
+                
+                # Format Overrun % 
+                df_display["Overrun %"] = df_display["Overrun %"].apply(lambda x: f"{x:.1f}%" if x != "" else "")
                 
                 st.dataframe(df_display, use_container_width=True)
                 
