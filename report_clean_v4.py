@@ -201,7 +201,6 @@ def build_llm_prompt(alerts: List[Dict[str, Any]], graph_data: Optional[List[Dic
 หน้าที่ของคุณคือจัดทำรายงานสรุปสำหรับผู้บริหารในรูปแบบที่อ่านง่ายและมีโครงสร้างชัดเจน
 
 **ข้อกำหนดสำคัญ:**
-- ให้แสดง "ตาราง Cost Code" ก่อนเริ่มรายงาน โดยใช้รูปแบบ Markdown เดิม **ห้ามแก้ไขหรือแปลงรูปแบบตาราง**
 - ให้เขียนรายงานใน **ภาษาไทยเท่านั้น**
 - ใช้น้ำเสียงเป็นทางการ เชิงวิเคราะห์ แต่กระชับและเข้าใจง่าย
 - วิเคราะห์ว่า cost code ไหนบ้างที่ overrun (status = RED) และ overrun มาจากช่วงเดือนใด
@@ -429,13 +428,9 @@ if go:
                     project_name = alerts[0].get("plan_code", "MG1") if alerts else "MG1"
                     
                     with st.spinner("💾 กำลังบันทึก report ลง S3..."):
-                        if save_report_to_s3(summary, report_date, project_name):
-                            st.success(f"✅ บันทึก report สำเร็จ → S3 bucket: {CONFIG['SUMMARY_BUCKET']}")
-                        else:
-                            st.warning("⚠️ ไม่สามารถบันทึก report ได้")
-                else:
-                    st.success("✅ ไม่พบรายการ Overrun (Status = RED)")
-            else:
-                st.error("❌ ไม่สามารถอ่านข้อมูล alerts จากไฟล์")
+                        save_report_to_s3(summary, report_date, project_name)
+                            
+                
+            
 else:
     st.caption("กดปุ่ม **Generate Report** เพื่อเริ่มวิเคราะห์ข้อมูล")
