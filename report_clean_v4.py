@@ -246,7 +246,7 @@ def build_llm_prompt(alerts: List[Dict[str, Any]], graph_data: Optional[List[Dic
 - ช่วงเวลาที่เริ่มมีปัญหา
 - Task ที่เกี่ยวข้อง
 - PM ผู้รับผิดชอบ
-
+**ปัญหาไม่ได้มาจาก PM หลายคนเพราะใน 1 แผนงานจะมี PM แค่คนเดียว**
 
 """.strip()
 
